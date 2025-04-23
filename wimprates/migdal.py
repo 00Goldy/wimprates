@@ -423,6 +423,82 @@ def rate_migdal(
     results = np.array(results) if _is_array else float(results[0])
     return halo_model.rho_dm / mw * (1 / wr.mn(material)) * results
 
+# New function for Migdal from CEvNS
+#######################################################################################################################################
+
+@export
+def rate_migdal_cevns(
+    E_e: np.ndarray,
+    flux_nu: Callable[[float], float],
+    dsigma: Callable[[float, float], float],
+    material: str ='Xe',
+    dark_matter: bool = False,
+    dipole: bool = False,
+    migdal_model: str = 'Cox',
+    consider_shells: Optional[tuple[str]] = None,
+)-> np.ndarray:
+    """Differential rate per unit detector mass and deposited ER energy of
+    Migdal effect WIMP-nucleus scattering
+
+    :param E_e: ER energy deposited in detector through Migdal effect
+    :param flux_nu: Neutrino flux received by the detector (cm^-2.s^-1.MeV^-1) 
+    :param dsigma: neutrino/nucleon cross-section for given interaction
+    :param consider_shells: consider the following atomic shells, are
+        fnmatched to the format from Ibe (i.e. 1_0, 1_1, etc).
+    Further kwargs are passed to scipy.integrate.quad numeric integrator
+    (e.g. error tolerance).
+    """
+    E_e = np.atleast_1d(E_e) * nu.keV
+    result = np.zeros_like(E_e)
+
+    shells = get_migdal_transitions_probability_iterators(
+        material=material,
+        model=migdal_model,
+        considered_shells=consider_shells,
+        dipole=dipole,
+        dark_matter=dark_matter,
+
+    )
+
+    for i, Ee in enumerate(E_e):
+        rate = 0
+
+        for shell in shells:
+            E_bind = shell.binding_e
+
+            def integrand(E_nu, E_rec):
+                # énergie dispo pour l’électron
+                E_avail = E_nu * nu.MeV - E_rec - E_bind
+                if E_avail < 0:
+                    return 0
+
+                P_migdal = shell(E_avail)
+                if P_migdal <= 0:
+                    return 0
+
+                return (
+                    flux_nu(E_nu) * dsigma(E_nu, E_rec) * P_migdal
+                )
+
+            def E_rec_max(E_nu):
+                m_N = wr.mn(material)
+                return 2 * (E_nu * nu.MeV)**2 / (m_N + 2*E_nu * nu.MeV)
+
+            # int over E_nu and E_rec
+            rate += dblquad(
+                integrand,
+                E_nu_min, E_nu_max,
+                lambda E_nu: 0,
+                lambda E_nu: E_rec_max(E_nu) / nu.MeV,  # convert for integration in MeV
+                epsabs=1e-5,
+                epsrel=1e-3
+            )[0]
+
+        result.append(rate)
+
+    return result  # in (cm^2 s)^-1 keV^-1
+
+#######################################################################################################################################
 
 @wr.deprecated("Use get_migdal_transitions_probability_iterators instead")
 @lru_cache()
