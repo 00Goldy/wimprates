@@ -434,8 +434,11 @@ def rate_migdal_cevns(
     material: str ='Xe',
     dark_matter: bool = False,
     dipole: bool = False,
-    migdal_model: str = 'Cox',
+    migdal_model: str = 'Ibe',
     consider_shells: Optional[tuple[str]] = None,
+    E_nu_min: float = 0.6 * nu.MeV,
+    E_nu_max: float = 20 * nu.MeV,
+    **kwargs
 )-> np.ndarray:
     """Differential rate per unit detector mass and deposited ER energy of
     Migdal effect WIMP-nucleus scattering
@@ -448,8 +451,22 @@ def rate_migdal_cevns(
     Further kwargs are passed to scipy.integrate.quad numeric integrator
     (e.g. error tolerance).
     """
-    E_e = np.atleast_1d(E_e) * nu.keV
+    N_A = 6.02214e23
+    m_u = 931.5 * nu.MeV
+    m_N = wr.mn(material)
+    E_e = np.atleast_1d(E_e) 
     result = np.zeros_like(E_e)
+
+    def E_rmax(E_nu):
+        m_N = wr.mn(material)
+        return 2 * (E_nu * nu.MeV)**2 / (m_N + 2*E_nu * nu.MeV)
+
+    def is_valid_recoil(E_nu,E_rec):
+        E_rec_max = E_rmax(E_nu)
+        return 0 <= E_rec <= E_rec_max
+
+    if consider_shells is None:
+        consider_shells = _default_shells(material)
 
     shells = get_migdal_transitions_probability_iterators(
         material=material,
@@ -460,41 +477,30 @@ def rate_migdal_cevns(
 
     )
 
-    for i, Ee in enumerate(E_e):
-        rate = 0
-
+    for i, E in enumerate(E_e):
+        total_rate = 0
         for shell in shells:
             E_bind = shell.binding_e
 
-            def integrand(E_nu, E_rec):
-                # énergie dispo pour l’électron
-                E_avail = E_nu * nu.MeV - E_rec - E_bind
-                if E_avail < 0:
+            def integrand(E_rec, E_nu):
+                E_ee = E - E_bind
+                if E_ee < 0 or not is_valid_recoil(E_nu, E_rec):
                     return 0
+                P = shell(E_ee)
+                return flux_nu(E_nu) * dsigma(E_nu, E_rec) * P
 
-                P_migdal = shell(E_avail)
-                if P_migdal <= 0:
-                    return 0
-
-                return (
-                    flux_nu(E_nu) * dsigma(E_nu, E_rec) * P_migdal
-                )
-
-            def E_rec_max(E_nu):
-                m_N = wr.mn(material)
-                return 2 * (E_nu * nu.MeV)**2 / (m_N + 2*E_nu * nu.MeV)
-
-            # int over E_nu and E_rec
-            rate += dblquad(
+            shell_rate, _ = dblquad(
                 integrand,
-                E_nu_min, E_nu_max,
+                E_nu_min,
+                E_nu_max,
                 lambda E_nu: 0,
-                lambda E_nu: E_rec_max(E_nu) / nu.MeV,  # convert for integration in MeV
-                epsabs=1e-5,
-                epsrel=1e-3
-            )[0]
+                lambda E_nu: E_rmax(E_nu),
+                **kwargs,
+            )
 
-        result.append(rate)
+            total_rate += shell_rate
+
+        result[i] = total_rate * N_A / m_N * m_u
 
     return result  # in (cm^2 s)^-1 keV^-1
 
