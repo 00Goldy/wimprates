@@ -21,6 +21,7 @@ import numericalunits as nu
 import numpy as np
 from tqdm.autonotebook import tqdm
 import pandas as pd
+from scipy.integrate import quad
 from scipy.integrate import dblquad
 from scipy.interpolate import interp1d
 
@@ -431,13 +432,14 @@ def rate_migdal_cevns(
     E_e: np.ndarray,
     flux_nu: Callable[[float], float],
     dsigma: Callable[[float, float], float],
+    q_nr: float = 0.15,
     material: str ='Xe',
-    dark_matter: bool = False,
+    dark_matter: bool = True,
     dipole: bool = False,
     migdal_model: str = 'Ibe',
     consider_shells: Optional[tuple[str]] = None,
-    E_nu_min: float = 0.6 * nu.MeV,
-    E_nu_max: float = 20 * nu.MeV,
+    E_nu_min: float = 0.6,
+    E_nu_max: float = 20,
     **kwargs
 )-> np.ndarray:
     """Differential rate per unit detector mass and deposited ER energy of
@@ -452,7 +454,6 @@ def rate_migdal_cevns(
     (e.g. error tolerance).
     """
     N_A = 6.02214e23
-    m_u = 931.5 * nu.MeV
     m_N = wr.mn(material)
     E_e = np.atleast_1d(E_e) 
     result = np.zeros_like(E_e)
@@ -463,6 +464,9 @@ def rate_migdal_cevns(
 
     def is_valid_recoil(E_nu,E_rec):
         E_rec_max = E_rmax(E_nu)
+        #print('Est-ce que CPT')
+        #print(E_rec)
+        #print(E_rec_max)
         return 0 <= E_rec <= E_rec_max
 
     if consider_shells is None:
@@ -482,26 +486,39 @@ def rate_migdal_cevns(
         for shell in shells:
             E_bind = shell.binding_e
 
-            def integrand(E_rec, E_nu):
-                E_ee = E - E_bind
+            def integrand(E_nu, E_rec):
+                E_ee = E - E_bind 
                 if E_ee < 0 or not is_valid_recoil(E_nu, E_rec):
+                    print('CPT')
                     return 0
                 P = shell(E_ee)
+                
+                print("Flux")
+                print(flux_nu(E_nu))
+                print("CS")
+                print(dsigma(E_nu, E_rec))
+                print('En')
+                print(E_nu)
+                print('Er')
+                print(E_rec)
+                
+
                 return flux_nu(E_nu) * dsigma(E_nu, E_rec) * P
 
             shell_rate, _ = dblquad(
-                integrand,
+                lambda E_rec, E_nu: integrand(E_nu, E_rec),
                 E_nu_min,
                 E_nu_max,
-                lambda E_nu: 0,
+                lambda _: 0,
                 lambda E_nu: E_rmax(E_nu),
-                **kwargs,
             )
 
+            #print(shell_rate)
             total_rate += shell_rate
 
-        result[i] = total_rate * N_A / m_N * m_u
-
+        conversion = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . an^-1
+        result[i] = total_rate * conversion
+    print(result)
     return result  # in (cm^2 s)^-1 keV^-1
 
 #######################################################################################################################################
