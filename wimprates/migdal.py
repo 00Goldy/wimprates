@@ -22,6 +22,7 @@ import numpy as np
 from tqdm.autonotebook import tqdm
 import pandas as pd
 from scipy.integrate import quad
+from scipy.integrate import trapezoid
 from scipy.integrate import dblquad
 from scipy.interpolate import interp1d
 
@@ -169,6 +170,9 @@ def get_migdal_transitions_probability_iterators(
                 bounds_error=False,
                 fill_value=0,
             )
+            #print(p(2*nu.eV)*nu.eV)
+            #print('E :'+str(np.array(df_migdal_material["E"].values)))
+            #print('P :'+str(df_migdal_material[state].values))
 
             shells.append(Shell(state, material, binding_e, model, p))
 
@@ -437,15 +441,16 @@ def rate_migdal_cevns(
     dark_matter: bool = True,
     dipole: bool = False,
     migdal_model: str = 'Ibe',
-    consider_shells: Optional[tuple[str]] = None,
-    E_nu_min: float = 0.6,
-    E_nu_max: float = 20,
+    consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*","5*"],
+    E_nu_min: float = 0.6,  #From MeV to eV
+    E_nu_max: float = 20 , #From MeV to eV
+    include_approx_nr: bool = False,
     **kwargs
 )-> np.ndarray:
     """Differential rate per unit detector mass and deposited ER energy of
     Migdal effect WIMP-nucleus scattering
 
-    :param E_e: ER energy deposited in detector through Migdal effect
+    :param E_e: ER energy deposited in detector through Migdal effect 
     :param flux_nu: Neutrino flux received by the detector (cm^-2.s^-1.MeV^-1) 
     :param dsigma: neutrino/nucleon cross-section for given interaction
     :param consider_shells: consider the following atomic shells, are
@@ -455,22 +460,29 @@ def rate_migdal_cevns(
     """
     N_A = 6.02214e23
     m_N = wr.mn(material)
-    E_e = np.atleast_1d(E_e) 
-    result = np.zeros_like(E_e)
-
-    def E_rmax(E_nu):
-        m_N = wr.mn(material)
-        return 2 * (E_nu * nu.MeV)**2 / (m_N + 2*E_nu * nu.MeV)
-
-    def is_valid_recoil(E_nu,E_rec):
-        E_rec_max = E_rmax(E_nu)
-        #print('Est-ce que CPT')
-        #print(E_rec)
-        #print(E_rec_max)
-        return 0 <= E_rec <= E_rec_max
+    total_rate = 0
 
     if consider_shells is None:
         consider_shells = _default_shells(material)
+    
+    df_migdal_material = pd.read_csv(
+            wr.data_file("migdal/Ibe/migdal_transition_%s.csv" % material)
+        )
+
+    E_e_data = df_migdal_material['E'].copy() #In eV
+
+    print(E_e_data)
+
+    def E_rmax(E_nu):
+        m_N = wr.mn(material)
+        return 2 * (E_nu * nu.MeV)**2 / ((m_N/nu.amu * 931.5) *nu.MeV + 2*E_nu * nu.MeV) * 1/nu.eV
+
+    def is_valid_recoil(E_nu,E_nr):
+        E_rec_max = E_rmax(E_nu)
+        #print('Est-ce que CPT')
+        #print(E_nr)
+        #print(E_rec_max)
+        return 0 <= E_nr <= E_rec_max
 
     shells = get_migdal_transitions_probability_iterators(
         material=material,
@@ -478,48 +490,61 @@ def rate_migdal_cevns(
         considered_shells=consider_shells,
         dipole=dipole,
         dark_matter=dark_matter,
-
     )
 
-    for i, E in enumerate(E_e):
-        total_rate = 0
-        for shell in shells:
-            E_bind = shell.binding_e
 
-            def integrand(E_nu, E_rec):
-                E_ee = E - E_bind 
-                if E_ee < 0 or not is_valid_recoil(E_nu, E_rec):
-                    print('CPT')
-                    return 0
-                P = shell(E_ee)
+    
+    def integrand(E_nu, E_nr):
+        P_Mig = 0
+
+        #### Caculating the total Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        for shell in shells :
+
+            p_diff=[]
+
+            for E_er in E_e:
                 
-                print("Flux")
-                print(flux_nu(E_nu))
-                print("CS")
-                print(dsigma(E_nu, E_rec))
-                print('En')
-                print(E_nu)
-                print('Er')
-                print(E_rec)
-                
+                E_det = E_er - shell.binding_e * nu.eV - include_approx_nr * E_nr * q_nr 
+                p = shell(E_det*nu.eV)*nu.eV /(2*np.pi)
 
-                return flux_nu(E_nu) * dsigma(E_nu, E_rec) * P
+                if E_det < 0 or not is_valid_recoil(E_nu, E_nr):
+                    p_diff.append(0)
+                else:
+                    p_diff.append(p)
 
-            shell_rate, _ = dblquad(
-                lambda E_rec, E_nu: integrand(E_nu, E_rec),
-                E_nu_min,
-                E_nu_max,
-                lambda _: 0,
-                lambda E_nu: E_rmax(E_nu),
-            )
+            E_det = E_e - shell.binding_e * nu.eV - include_approx_nr * E_nr * q_nr 
 
-            #print(shell_rate)
-            total_rate += shell_rate
+            P_Mig += trapezoid(p_diff,E_det) # Finally we integrate the differential probability
+        #### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        print('Ev : '+str(E_nu))
+        print('Enr : '+str(E_nr))
+        print('EnrMAX : '+str(E_rmax(E_nu)))
+        print("Flux"+str(flux_nu(E_nu)))
+        print("CS"+str(dsigma(E_nu, E_nr)))
+        print("P"+str(P_Mig))
 
-        conversion = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . an^-1
-        result[i] = total_rate * conversion
-    print(result)
-    return result  # in (cm^2 s)^-1 keV^-1
+        print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
+        print("\n")
+
+        return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
+
+    shell_rate, _ = dblquad(
+        lambda E_nr, E_nu: integrand(E_nu, E_nr),
+        E_nu_min,
+        E_nu_max,
+        lambda _: 0,
+        lambda E_nu: E_rmax(E_nu)*nu.eV/nu.MeV,
+        ) 
+    
+        
+    conversion = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
+
+    total_rate = []
+    total_rate.append(shell_rate* conversion)
+
+    print(total_rate)
+
+    return total_rate  # in 
 
 #######################################################################################################################################
 
