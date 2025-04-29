@@ -25,6 +25,7 @@ from scipy.integrate import quad
 from scipy.integrate import trapezoid
 from scipy.integrate import dblquad
 from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
 
 import wimprates as wr
 
@@ -337,7 +338,7 @@ def rate_migdal(
         the simultaneous NR signal approximately, assuming q_{NR} = 0.15.
         This is how https://arxiv.org/abs/1707.07258
         presented the Migdal spectra.
-    :param q_nr: conversion between Enr and Eee (see p. 27 of
+    :param q_nr: conv between Enr and Eee (see p. 27 of
         https://arxiv.org/pdf/1707.07258.pdf)
     :param material: name of the detection material (default is 'Xe')
     :param t: A J2000.0 timestamp.
@@ -458,8 +459,11 @@ def rate_migdal_cevns(
     Further kwargs are passed to scipy.integrate.quad numeric integrator
     (e.g. error tolerance).
     """
+
     N_A = 6.02214e23
     m_N = wr.mn(material)
+    conv = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
+
     total_rate = 0
 
     if consider_shells is None:
@@ -469,19 +473,14 @@ def rate_migdal_cevns(
             wr.data_file("migdal/Ibe/migdal_transition_%s.csv" % material)
         )
 
-    E_e_data = df_migdal_material['E'].copy() #In eV
+    #E_e_data = df_migdal_material['E'].copy() #In eV
 
-    print(E_e_data)
-
-    def E_rmax(E_nu):
+    def E_rmax(E_nu): 
         m_N = wr.mn(material)
-        return 2 * (E_nu * nu.MeV)**2 / ((m_N/nu.amu * 931.5) *nu.MeV + 2*E_nu * nu.MeV) * 1/nu.eV
+        return 2 * (E_nu * nu.MeV)**2 / ((m_N/nu.amu * 931.5*nu.MeV) + 2*E_nu * nu.MeV) * 1/nu.eV
 
     def is_valid_recoil(E_nu,E_nr):
         E_rec_max = E_rmax(E_nu)
-        #print('Est-ce que CPT')
-        #print(E_nr)
-        #print(E_rec_max)
         return 0 <= E_nr <= E_rec_max
 
     shells = get_migdal_transitions_probability_iterators(
@@ -492,59 +491,134 @@ def rate_migdal_cevns(
         dark_matter=dark_matter,
     )
 
+    def p_diff_func(E_nr, E_det, f):
+        return f(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr *nu.eV / (m_N/nu.amu * 931.5e6*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
-    
-    def integrand(E_nu, E_nr):
+    #def rate_no_migdal(E_nu, E_nr):
+    #    return flux_nu(E_nu) * dsigma(E_nu, E_nr)
+
+    def integrand_tot(E_nu, E_nr):
         P_Mig = 0
 
         #### Caculating the total Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         for shell in shells :
 
             p_diff=[]
+            #E_det_list = []
 
             for E_er in E_e:
                 
-                E_det = E_er - shell.binding_e * nu.eV - include_approx_nr * E_nr * q_nr 
-                p = shell(E_det*nu.eV)*nu.eV /(2*np.pi)
+                E_det = E_er - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
+                #print('Enl : '+str(shell.binding_e / nu.eV))
+                p = p_diff_func(E_nr, E_det, shell)
+                #print('Edet : '+str(E_det))
+                p_diff.append(p)
 
-                if E_det < 0 or not is_valid_recoil(E_nu, E_nr):
-                    p_diff.append(0)
-                else:
-                    p_diff.append(p)
-
-            E_det = E_e - shell.binding_e * nu.eV - include_approx_nr * E_nr * q_nr 
-
-            P_Mig += trapezoid(p_diff,E_det) # Finally we integrate the differential probability
+                #E_det_list.append(E_det)  # Stocke aussi le E_det utilisé
+            E_det = E_e
+            P_shell = trapezoid(p_diff, E_det)  # Utilise la bonne liste
+            #print(shell.name)
+            #print('Pshell : '+str(P_shell))
+            P_Mig += P_shell # Finally we integrate the differential probability
         #### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        """
         print('Ev : '+str(E_nu))
         print('Enr : '+str(E_nr))
         print('EnrMAX : '+str(E_rmax(E_nu)))
+        
         print("Flux"+str(flux_nu(E_nu)))
         print("CS"+str(dsigma(E_nu, E_nr)))
         print("P"+str(P_Mig))
 
         print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
         print("\n")
-
+        """
         return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
 
-    shell_rate, _ = dblquad(
-        lambda E_nr, E_nu: integrand(E_nu, E_nr),
+    def integrand_diff(E_nu, E_nr, i):
+        P_Mig = 0
+
+        #### Caculating the total differential Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        for shell in shells:
+
+            p_diff = []
+
+            for E_er in E_e :          
+                
+                E_det = E_er - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
+                p = shell(E_det*nu.eV)*nu.eV /(2*np.pi)
+
+                p_diff.append(p)
+
+            P_shell = trapezoid(p_diff, E_det)
+            
+            P_Mig += P_shell
+        #### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            """
+            print('Ev : '+str(E_nu))
+            print('Enr : '+str(E_nr))
+            print('EnrMAX : '+str(E_rmax(E_nu)))
+            print("Flux"+str(flux_nu(E_nu)))
+            print("CS"+str(dsigma(E_nu, E_nr)))
+            print("P"+str(P_Mig))
+
+            print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
+            print("\n")
+            """
+
+        return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
+    
+    E_R = np.logspace(0,6,1000)
+    Ptot = []
+    for Er in E_R :
+        R, P = integrand_tot(1,Er)
+        Ptot.append(P)
+
+    plt.plot(E_R, Ptot,label='Probability', color='black')
+    plt.title(r"P$_{Mig}$ VS $E_{NR}$")
+    plt.xlabel(r"NR Energy $E_{NR}$ [eV]")
+    plt.ylabel(r"P$_Mig$")
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    shell_tot_rate, _ = dblquad(
+        lambda E_nu, E_nr: integrand_tot(E_nu, E_nr),
         E_nu_min,
         E_nu_max,
         lambda _: 0,
-        lambda E_nu: E_rmax(E_nu)*nu.eV/nu.MeV,
+        lambda E_nu: E_rmax(E_nu),#*nu.eV/nu.MeV,
+        ) 
+    """
+    tot_rate_no_migdal, _ = dblquad(
+        lambda E_nu, E_nr: rate_no_migdal(E_nu, E_nr),
+        E_nu_min,
+        E_nu_max,
+        lambda _: 0,
+        lambda E_nu: E_rmax(E_nu),#*nu.eV/nu.MeV,
         ) 
     
-        
-    conversion = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
+    diff_rate = []
 
-    total_rate = []
-    total_rate.append(shell_rate* conversion)
+    for i in range(len(E_e)):
+        shell_diff_rate, _ = dblquad(
+            lambda E_nr, E_nu: integrand_diff(E_nu, E_nr, i),
+            E_nu_min,
+            E_nu_max,
+            lambda _: 0,
+            lambda E_nu: E_rmax(E_nu)*nu.eV/nu.MeV,
+            ) 
+        print(str((i+1)/len(E_e)*100)+'%')
+        diff_rate.append(shell_diff_rate * conv)
+    """
+    #total_rate = []
+    
+    #total_rate.append(shell_tot_rate * conv)
 
-    print(total_rate)
-
-    return total_rate  # in 
+    return  shell_tot_rate/tot_rate_no_migdal  # in 
 
 #######################################################################################################################################
 
