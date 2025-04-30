@@ -442,9 +442,9 @@ def rate_migdal_cevns(
     dark_matter: bool = True,
     dipole: bool = False,
     migdal_model: str = 'Ibe',
-    consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*","5*"],
-    E_nu_min: float = 0.6,  #From MeV to eV
-    E_nu_max: float = 20 , #From MeV to eV
+    consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*"],
+    E_nu_min: float = 0.6*nu.MeV/nu.eV,  #From MeV to eV
+    E_nu_max: float = 20*nu.MeV/nu.eV, #From MeV to eV
     include_approx_nr: bool = False,
     **kwargs
 )-> np.ndarray:
@@ -459,10 +459,8 @@ def rate_migdal_cevns(
     Further kwargs are passed to scipy.integrate.quad numeric integrator
     (e.g. error tolerance).
     """
-
-    N_A = 6.02214e23
     m_N = wr.mn(material)
-    conv = 3.154e7 * N_A / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
+    conv = 3.154e7 * nu.NA / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
 
     total_rate = 0
 
@@ -477,7 +475,7 @@ def rate_migdal_cevns(
 
     def E_rmax(E_nu): 
         m_N = wr.mn(material)
-        return 2 * (E_nu * nu.MeV)**2 / ((m_N/nu.amu * 931.5*nu.MeV) + 2*E_nu * nu.MeV) * 1/nu.eV
+        return 2 * (E_nu * nu.eV)**2 / ((m_N/nu.amu * 931.5e6*nu.eV) + 2*E_nu * nu.eV) * 1/nu.eV
 
     def is_valid_recoil(E_nu,E_nr):
         E_rec_max = E_rmax(E_nu)
@@ -492,10 +490,10 @@ def rate_migdal_cevns(
     )
 
     def p_diff_func(E_nr, E_det, f):
-        return f(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr *nu.eV / (m_N/nu.amu * 931.5e6*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
+        return f(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.keV / (m_N/nu.amu * 931.5e6*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
-    #def rate_no_migdal(E_nu, E_nr):
-    #    return flux_nu(E_nu) * dsigma(E_nu, E_nr)
+    def rate_no_migdal(E_nu, E_nr):
+        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV))
 
     def integrand_tot(E_nu, E_nr):
         P_Mig = 0
@@ -535,7 +533,7 @@ def rate_migdal_cevns(
         """
         return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
 
-    def integrand_diff(E_nu, E_nr, i):
+    def integrand_diff(E_nu, E_nr):
         P_Mig = 0
 
         #### Caculating the total differential Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -546,9 +544,11 @@ def rate_migdal_cevns(
             for E_er in E_e :          
                 
                 E_det = E_er - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
-                p = shell(E_det*nu.eV)*nu.eV /(2*np.pi)
+                p = p_diff_func(E_nr, E_det, shell)
 
                 p_diff.append(p)
+
+            E_det = E_e - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
 
             P_shell = trapezoid(p_diff, E_det)
             
@@ -565,9 +565,10 @@ def rate_migdal_cevns(
             print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
             print("\n")
             """
+            
 
-        return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
-    
+        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
+    """
     E_R = np.logspace(0,6,1000)
     Ptot = []
     for Er in E_R :
@@ -584,14 +585,44 @@ def rate_migdal_cevns(
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+    """
+    ENR = np.logspace(-6,4,100)
+    Result = []
+    Result_no_Mig = []
 
-    shell_tot_rate, _ = dblquad(
-        lambda E_nu, E_nr: integrand_tot(E_nu, E_nr),
-        E_nu_min,
-        E_nu_max,
-        lambda _: 0,
-        lambda E_nu: E_rmax(E_nu),#*nu.eV/nu.MeV,
-        ) 
+    for E_nr in ENR :
+        diff_rate, _ = quad(
+            lambda E_nu: integrand_diff(E_nu, E_nr),
+            E_nu_min,
+            E_nu_max,
+            ) 
+        diff_rate_no_migdal, _ = quad(
+            lambda E_nu: rate_no_migdal(E_nu, E_nr),
+            E_nu_min,
+            E_nu_max,
+            ) 
+        
+        print("dR : "+str(diff_rate))
+        print("Enr : "+str(E_nr))
+        print("\n")
+        Result.append(diff_rate * conv)
+        Result_no_Mig.append(diff_rate_no_migdal * conv)
+
+    plt.plot(ENR, Result,label='Migdal Rate', color='black')
+    plt.plot(ENR, Result_no_Mig,label='CEvNS Rate', color='blue')
+
+    plt.title(r"$\frac{dR_{Mig}}{dE_{NR}}$ VS $E_{NR}$")
+    plt.xlabel(r"NR Energy $E_{NR}$ [eV]")
+    plt.ylabel(r"Differential Rate $\frac{dR_{Mig}}{dE_{NR}}$ [ton.yr.keV]$^{-1}$")
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+    
+        
+    
     """
     tot_rate_no_migdal, _ = dblquad(
         lambda E_nu, E_nr: rate_no_migdal(E_nu, E_nr),
@@ -618,7 +649,7 @@ def rate_migdal_cevns(
     
     #total_rate.append(shell_tot_rate * conv)
 
-    return  shell_tot_rate/tot_rate_no_migdal  # in 
+    return  Result  # in 
 
 #######################################################################################################################################
 
