@@ -594,15 +594,22 @@ def rate_migdal_cevns(
         
         :result rate_no_migdal_flamedisx: Differential probability without computing the migdal probability
         """
-        return flux_nu(E_nr/(nu.keV/nu.eV))
+        return flux_nu(E_nr/(nu.keV/nu.eV)) * 246.345
     
-    def rate_flamedisx(E_nr, E_det) :
+    def rate_flamedisx(E_det) :
         """ Differential Rate from flamedisx with migdal effect
         :param E_nr: NR energy in eV
         
         :result rate_flamedisx: Differential probability without computing the migdal probability
         """
-        return rate_no_migdal_flamedisx(E_nr) * p_diff_func(E_nr, E_det, shell)
+        
+        result, _ = quad(lambda E_nr: rate_no_migdal_flamedisx(E_nr)*p_diff_func(E_nr, E_det, shell),
+                         0.6*1e3,
+                         6*1e3,
+        )
+        print('int rate = ' + str(p_diff_func(E_nr, E_det, shell)))
+        print('diff rate = '+str(rate_no_migdal_flamedisx(E_nr)))
+        return result
 
     def integrand_diff(E_nu, E_nr, E_det):
         """ Computing dR_mig / (dE_nu . dE_nr . dE_det) to later be integrated over E_nu and E_nr
@@ -640,6 +647,8 @@ def rate_migdal_cevns(
                     )
         print("Val = "+str(val*conv))
         R.append(val*conv)
+
+    print('Integral : ' + str(trapezoid(Rflame,ENR)))
     plt.figure(figsize=(8, 6))
     plt.plot(ENR,Rflame)
     plt.xscale('log')
@@ -650,37 +659,37 @@ def rate_migdal_cevns(
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
+    
 
-    integral = 0
-    rate_flamedisx_dict = {}
-    for shell in shells :
+    interp_list = []  # pour stocker les interpolateurs individuels
+    E_arb = np.logspace(-1+np.log10(5), 5, 10000000)  # grille arbitraire commune
+
+    for shell in shells:
         E_det = E_e - shell.binding_e
-        R_shell = []
-        for E_det_value in E_det :
-            val, _ = quad(
-                lambda E_nr : rate_flamedisx(E_nr, E_det_value),
-                600,
-                6000,
-            )
-            R_shell.append(val)
-        rate_flamedisx_dict[shell.name] = interp1d(E_det,R_shell, bounds_error=False, fill_value=0)
-    E_arb = np.linspace(0,1e9,10000)
-    total_vals = np.zeros_like(E_arb)
-    for interp in rate_flamedisx_dict.values():
-        final_res += interp(E_arb)
+        R_shell = [rate_flamedisx(E) for E in E_det]
+
+        interp_shell = interp1d(E_det, R_shell, bounds_error=False, fill_value=0)
+        interp_list.append(interp_shell)
+
+    # Sommation des interpolateurs sur la grille E_arb
+    total_vals = np.sum([interp(E_arb) for interp in interp_list], axis=0)
+
+    # Créer un nouvel interpolateur pour la somme totale si besoin :
+    interp_tot = interp1d(E_arb, total_vals, bounds_error=False, fill_value=0)
+    Rate_unnorm = interp_tot(E_arb)
+
+    print('Normalization : '+str(trapezoid(Rate_unnorm, E_arb)))
     
     plt.figure(figsize=(8, 6))
-    plt.plot(E_arb,total_vals)
+    plt.plot(E_arb, Rate_unnorm)
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel(r'$E_{det}$ [eV]', fontsize=16)
-    plt.ylabel(r'$\frac{dR}{dE_{det}}$ [??]', fontsize=16)
+    plt.ylabel(r'$\frac{dR}{dE_{det}}$ [tn.yr.keV]$^-1$', fontsize=16)
     plt.title(r'Differential rate with Migdal VS $E_{det}$', fontsize=14)
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
-
-
 
     rate = {}
     print("Lenght E_e : "+str(len(E_e)))
@@ -691,7 +700,7 @@ def rate_migdal_cevns(
             E_nu_min * nu.MeV / nu.eV,
             E_nu_max * nu.MeV / nu.eV,       # E_nu (eV)
             
-            lambda E_nu: 0,                                             # E_nr min (eV)
+            lambda E_nu: 0,                  # E_nr min (eV)
             lambda E_nu: E_rmax(E_nu * nu.MeV / nu.eV),
         )
 
