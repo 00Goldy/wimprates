@@ -10,6 +10,7 @@ Two implemented models:
 """
 
 from collections.abc import Callable
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import os
@@ -27,6 +28,7 @@ from scipy.integrate import trapezoid
 from scipy.integrate import dblquad
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator
 
 import wimprates as wr
 
@@ -442,9 +444,9 @@ def rate_migdal_cevns(
     dark_matter: bool = True,
     dipole: bool = False,
     migdal_model: str = 'Ibe',
-    consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*"],
-    E_nu_min: float = 0.6*nu.MeV/nu.eV,  #From MeV to eV
-    E_nu_max: float = 20*nu.MeV/nu.eV, #From MeV to eV
+    consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*","5*"],
+    E_nu_min: float = 0.6,  # MeV 
+    E_nu_max: float = 20, # MeV 
     include_approx_nr: bool = True,
     **kwargs
 )-> np.ndarray:
@@ -459,28 +461,32 @@ def rate_migdal_cevns(
     Further kwargs are passed to scipy.integrate.quad numeric integrator
     (e.g. error tolerance).
     """
-    m_N = wr.mn(material)
+    m_N = wr.mn(material) # We get the mass of a Xe nucleus (in amu)
+    m_N *= 931.5e6*nu.eV/nu.amu # We convert it to eV/c^2 so eV in natural units
+    Result = []
     conv = 3.154e7 * nu.NA / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
 
-    total_rate = 0
-
+    # Condition for the shells considered
     if consider_shells is None:
         consider_shells = _default_shells(material)
     
+    # We get the range of energy where the probability is defined
+    # ~~~~~~~~~~~~~~~~~~~
     df_migdal_material = pd.read_csv(
             wr.data_file("migdal/Ibe/migdal_transition_%s.csv" % material)
         )
 
-    #E_e_data = df_migdal_material['E'].copy() #In eV
+    E_e_data = df_migdal_material['E'].copy() #In eV
+    # ~~~~~~~~~~~~~~~~~~~
 
     def E_rmax(E_nu): 
-        m_N = wr.mn(material)
-        return 2 * (E_nu * nu.eV)**2 / ((m_N/nu.amu * 931.5e6*nu.eV) + 2*E_nu * nu.eV) * 1/nu.eV
-
-    def is_valid_recoil(E_nu,E_nr):
-        E_rec_max = E_rmax(E_nu)
-        return 0 <= E_nr <= E_rec_max
-
+        """ Highest NR recoil energy transfered by neutrino of E_nu energy
+        :param E_nu: Neutrino energy in eV
+        :result E_rmax: NR recoil energy in eV
+        """
+        return 2 * (E_nu * nu.eV)**2 / (m_N + 2*E_nu * nu.eV) * 1/nu.eV
+    
+    # We define all the shells for our material and the ionization probability associated
     shells = get_migdal_transitions_probability_iterators(
         material=material,
         model=migdal_model,
@@ -489,199 +495,112 @@ def rate_migdal_cevns(
         dark_matter=dark_matter,
     )
 
-    def p_diff_func(E_nr, E_det, f):
-        return f(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.keV / (m_N/nu.amu * 931.5e6*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
-    def rate_no_migdal(E_nu, E_nr):
-        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV))
+    def p_diff_func(E_nr, E_det, shell):
+        """ Differential probability for a given shell and nucleus momentum
+        :param E_nr: NR energy in eV
+        :param E_det: Detcted energy in eV
+        :param shell: A callable which return the single inonization differential probability (in nu.eV^-1) for a given energy (in nu.eV)
 
-    def integrand_tot(E_nu, E_nr):
-        P_Mig = 0
-
-        #### Caculating the total Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        for shell in shells :
-
-            p_diff=[]
-            #E_e_list = []
-
-            for E_er in E_e:
-                
-                E_e = E_er - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
-                #print('Enl : '+str(shell.binding_e / nu.eV))
-                p = p_diff_func(E_nr, E_e, shell)
-                #print('Edet : '+str(E_e))
-                p_diff.append(p)
-
-                #E_e_list.append(E_e)  # Stocke aussi le E_e utilisé
-            E_e = E_e
-            P_shell = trapezoid(p_diff, E_e)
-            #print(shell.name)
-            #print('Pshell : '+str(P_shell))
-            P_Mig += P_shell # Finally we integrate the differential probability
-        #### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        :result p_diff_func: Single ionization differential probability in eV^-1
         """
-        print('Ev : '+str(E_nu))
-        print('Enr : '+str(E_nr))
-        print('EnrMAX : '+str(E_rmax(E_nu)))
-        
-        print("Flux"+str(flux_nu(E_nu)))
-        print("CS"+str(dsigma(E_nu, E_nr)))
-        print("P"+str(P_Mig))
+        return shell(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.eV /m_N) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
-        print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
-        print("\n")
-        """
-        return flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig
 
-    def integrand_diff(E_nu, E_nr):
-        P_Mig = 0
-
-        #### Caculating the total differential Migdal probability ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        for shell in shells:
-
-            p_diff = []
-
-            for E_er in E_e :          
-                
-                E_det = E_er - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
-                p = p_diff_func(E_nr, E_det, shell)
-
-                p_diff.append(p)
-            
-            plt.figure(figsize=(8,5))
-            plt.plot(E_e, p_diff)
-
-            E_det = E_e - shell.binding_e / nu.eV - include_approx_nr * E_nr * q_nr 
-
-            P_shell = trapezoid(p_diff, E_e)
-            
-            P_Mig += P_shell
-        #### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            """
-            print('Ev : '+str(E_nu))
-            print('Enr : '+str(E_nr))
-            print('EnrMAX : '+str(E_rmax(E_nu)))
-            print("Flux"+str(flux_nu(E_nu)))
-            print("CS"+str(dsigma(E_nu, E_nr)))
-            print("P"+str(P_Mig))
-
-            print("Diff Rate : " + str(flux_nu(E_nu) * dsigma(E_nu, E_nr) * P_Mig))
-            print("\n")
-            """
-        plt.xlabel(r"ER Energy $E_{ER}$ [eV]")
-        plt.ylabel(r"Differential Probabilities $\frac{dp}{dE_{e}}$")
-        plt.xscale('log')
-        plt.xlim(1e0,7e4)
-        plt.yscale('log')
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-        #return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
-        return flux_nu(E_nr/(nu.keV/nu.eV)) * P_Mig, flux_nu(E_nr/(nu.keV/nu.eV)), P_Mig
+    ### First test: Plotting differential probability for Xenon, summed by principal quantum number n
     """
-    E_R = np.logspace(0,6,1000)
-    Ptot = []
-    for Er in E_R :
-        R, P = integrand_tot(1,Er)
-        Ptot.append(P)
+    # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
+    E_nr_fixed = 1e-6 * m_N / (2 * nu.eV) # eV
 
-    plt.plot(E_R, Ptot,label='Probability', color='black')
-    plt.title(r"P$_{Mig}$ VS $E_{NR}$")
-    plt.xlabel(r"NR Energy $E_{NR}$ [eV]")
-    plt.ylabel(r"P$_Mig$")
+    # Electronic recoil energies in keV (log-spaced)
+    E_e = np.logspace(0, 4 + np.log10(2), 1000)
+
+    # Group shells by principal quantum number n (based on shell.name like '3_2')
+    shells_by_n = defaultdict(list)
+    for shell in shells:
+        n = int(shell.name.split('_')[0])  # Extract principal quantum number
+        shells_by_n[n].append(shell)
+
+    # Compute and sum differential probabilities for each group of shells with the same n
+    p_diff_grouped = {}
+    for n, shell_group in shells_by_n.items():
+        p_diff_sum = np.zeros_like(E_e)
+        for shell in shell_group:
+            p_diff_shell = [p_diff_func(E_nr_fixed, E_er_value, shell) for E_er_value in E_e]
+            p_diff_sum += np.array(p_diff_shell)
+        p_diff_grouped[n] = p_diff_sum
+
+    # Plotting
+    plt.figure(figsize=(8, 6))
+    for n, p_diff in sorted(p_diff_grouped.items()):
+        plt.plot(E_e, p_diff, label=f'n={n}')
+
     plt.xscale('log')
     plt.yscale('log')
-    plt.legend()
-    plt.grid(True)
+    plt.xlabel(r'$E_e$ [eV]', fontsize=16)
+    plt.ylabel(r'$\frac{1}{2\pi} \frac{dp^c}{dE_e}$ [eV$^{-1}$]', fontsize=16)
+    plt.title(r'Migdal Effect: $\frac{dp^c}{dE_e}$ summed over $l$ for each $n$', fontsize=14)
+    plt.legend(title="Principal quantum number")
+    plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
     """
-    ENR = np.logspace(np.log10(601),np.log10(6000),100)
-    Result = []
-    Result_no_Mig = []
-    Rapport = []
-    Pmiggg = []
-
-    for E_nr in ENR :
-        diff_rate, diff_rate_no_migdal, P = integrand_diff(1, (m_N/nu.amu * 931.5e6*nu.eV)/2 * 1e-6)
-        """
-        diff_rate_no_migdal, _ = quad(
-            lambda E_nu: rate_no_migdal(E_nu, E_nr),
-            E_nu_min,
-            E_nu_max,
-            ) 
-        """
-        
-        
-        print("dR : "+str(diff_rate))
-        print("Enr : "+str(E_nr))
-        print("\n")
-        Result.append(diff_rate)#* conv)
-        Pmiggg.append(P)
-        Result_no_Mig.append(diff_rate_no_migdal)
-        if diff_rate!=0 :
-            Rapport.append(diff_rate/diff_rate_no_migdal)
-        else : 
-            Rapport.append(0)
     
-    plt.figure(figsize=(8,5))
 
-    #plt.plot(ENR, Result,label='Migdal Rate', color='black')
-    #plt.plot(ENR, Result_no_Mig,label='CEvNS Rate', color='blue')
-    #plt.plot(ENR, Rapport,label='Rapport', color='blue')
-    plt.plot(ENR, Pmiggg,label='Rapport', color='blue')
+    ### Second test: Computing total probabilities over E_e
+    """
+    # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
+    E_nr_fixed = 1e-6 * m_N / (2 * nu.eV)
+
+    for shell in shells:
+        p_diff_shell = []
+        for E_er_value in E_e_data : 
+            p_diff_shell.append(p_diff_func(E_nr_fixed, E_er_value, shell))
+        Pshell = trapezoid(p_diff_shell, E_e_data)
+
+        print(str(shell.name) + " : " + str(Pshell))
+    """
 
 
-
-    plt.title(r"$\frac{dR_{Mig}}{dE_{NR}}$ VS $E_{NR}$")
-    plt.xlabel(r"NR Energy $E_{NR}$ [eV]")
-    plt.ylabel(r"Differential Rate $\frac{dR_{Mig}}{dE_{NR}}$")
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlim(0.6e3, 6e3)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    ENR *= 1e-3
-
-    print('ENR : '+str(ENR))
-
+    # We define the original differential rate to compare
+    def rate_no_migdal(E_nu, E_nr):
+        """ Differential Rate for a given neutrino Energy and NR energy
+        :param E_nu: Neutrino energy in eV
+        :param E_nr: NR energy in eV
+        
+        :result rate_no_migdal: Differential probability without computing the migdal probability
+        """
+        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV))
+    
+    def integrand_diff(E_nu, E_nr, E_det):
+        """ Computing dR_mig / (dE_nu . dE_nr . dE_det) to later be integrated over E_nu and E_nr
+        :param E_nu: Neutrino energy in eV
+        :param E_nr: NR energy in eV
+        
+        :result integrand_diff: integrand to be integrated
+        """
+        #return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
+        return flux_nu(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV)) * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)), p_diff_func(E_nr, E_det, shell)
+    """
     df = pd.DataFrame({
         "energy_keV": ENR,
         "spectrum_value_norm": Result
         })
 
     df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
-
     """
-    tot_rate_no_migdal, _ = dblquad(
-        lambda E_nu, E_nr: rate_no_migdal(E_nu, E_nr),
-        E_nu_min,
-        E_nu_max,
-        lambda _: 0,
-        lambda E_nu: E_rmax(E_nu),#*nu.eV/nu.MeV,
-        ) 
-    
-    diff_rate = []
+    for shell in shells :
+        result_shell = dblquad(
+            integrand_diff,
+            E_nu_min*nu.eV/nu.MeV, #From MeV to eV
+            E_nu_max*nu.eV/nu.MeV, #From MeV to eV
+            lambda E_nr
+            
 
-    for i in range(len(E_e)):
-        shell_diff_rate, _ = dblquad(
-            lambda E_nr, E_nu: integrand_diff(E_nu, E_nr, i),
-            E_nu_min,
-            E_nu_max,
-            lambda _: 0,
-            lambda E_nu: E_rmax(E_nu)*nu.eV/nu.MeV,
-            ) 
-        print(str((i+1)/len(E_e)*100)+'%')
-        diff_rate.append(shell_diff_rate * conv)
-    """
-    #total_rate = []
-    
-    #total_rate.append(shell_tot_rate * conv)
 
+        )
+
+        Result.append(result_shell)
     return  Result  # in 
 
 #######################################################################################################################################
