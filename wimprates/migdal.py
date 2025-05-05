@@ -462,11 +462,14 @@ def rate_migdal_cevns(
     (e.g. error tolerance).
     """
     m_N = wr.mn(material) # We get the mass of a Xe nucleus (in amu)
-    m_N *= 931.5e6/nu.amu # We convert it to eV/c^2 so eV in natural units
+    m_N /= nu.amu # We convert ii back to get m_N = 131.293 for Xe
+
+    conv = 3.154e7 * nu.NA / (m_N * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
+
+    m_N *= 931.5e6# We convert it to eV/c^2 so eV in natural units
 
     
     Result = []
-    conv = 3.154e7 * nu.NA / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
 
     # Condition for the shells considered
     if consider_shells is None:
@@ -510,11 +513,19 @@ def rate_migdal_cevns(
         """
         return shell(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.eV /(m_N*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
+    def E_nu_min_fun(E_r):
+        """ Minimum neutrino energy to induce a NR
+        :param E_nr: NR energy in eV
+        
+        :result E_nu_min: Neutrino energy in eV
+        """
+        return 0.5 * (E_r + np.sqrt(E_r**2 + 2 * m_N * E_r))  # E_r et M en eV
+
 
     ### First test: Plotting differential probability for Xenon, summed by principal quantum number n
-    """
+    
     # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
-    E_nr_fixed = 1e-6 * m_N / (2 * nu.eV) # eV
+    E_nr_fixed = 1e-6 * m_N * nu.eV / (2 * nu.eV) # eV
 
     # Electronic recoil energies in keV (log-spaced)
     E_e = np.logspace(0, 4 + np.log10(2), 1000)
@@ -548,13 +559,13 @@ def rate_migdal_cevns(
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
-    """
+    
     
 
     ### Second test: Computing total probabilities over E_e
-    """
+    
     # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
-    E_nr_fixed = 1e-6 * m_N / (2 * nu.eV)
+    E_nr_fixed = 1e-6 * m_N * nu.eV / (2 * nu.eV)
 
     for shell in shells:
         p_diff_shell = []
@@ -563,7 +574,7 @@ def rate_migdal_cevns(
         Pshell = trapezoid(p_diff_shell, E_e_data)
 
         print(str(shell.name) + " : " + str(Pshell))
-    """
+    
 
 
     # We define the original differential rate to compare
@@ -576,6 +587,23 @@ def rate_migdal_cevns(
         """
         return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV))
     
+    # We define the differential rate from flamedisx
+    def rate_no_migdal_flamedisx(E_nr):
+        """ Differential Rate from flamedisx
+        :param E_nr: NR energy in eV
+        
+        :result rate_no_migdal_flamedisx: Differential probability without computing the migdal probability
+        """
+        return flux_nu(E_nr/(nu.keV/nu.eV))
+    
+    def rate_flamedisx(E_nr, E_det) :
+        """ Differential Rate from flamedisx with migdal effect
+        :param E_nr: NR energy in eV
+        
+        :result rate_flamedisx: Differential probability without computing the migdal probability
+        """
+        return rate_no_migdal_flamedisx(E_nr) * p_diff_func(E_nr, E_det, shell)
+
     def integrand_diff(E_nu, E_nr, E_det):
         """ Computing dR_mig / (dE_nu . dE_nr . dE_det) to later be integrated over E_nu and E_nr
         :param E_nu: Neutrino energy in eV
@@ -584,7 +612,7 @@ def rate_migdal_cevns(
         :result integrand_diff: integrand to be integrated
         """
         #return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
-        return flux_nu(E_nu/(nu.MeV/nu.eV)) * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)) * p_diff_func(E_nr, E_det, shell), p_diff_func(E_nr, E_det, shell) 
+        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV)  * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)) * p_diff_func(E_nr, E_det, shell), p_diff_func(E_nr, E_det, shell) 
     """
     df = pd.DataFrame({
         "energy_keV": ENR,
@@ -593,43 +621,92 @@ def rate_migdal_cevns(
 
     df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
     """
+
+    ### Third test : Checking the diffrential Rate as a function of NR energy
+    
+    # For NR energy :
+    ENR = np.logspace(np.log10(600),np.log10(6000)) #in eV
+    R = []
+    Rflame = []
+    for E_nr in ENR :
+        flamerate = rate_no_migdal_flamedisx(E_nr)
+        print('flameRate = ' + str(flamerate))
+        Rflame.append(flamerate)
+        print('Enumin : '+str(E_nu_min_fun(E_nr) * 1e6))
+
+        val, _ = quad(lambda E_nu : rate_no_migdal(E_nu,E_nr),
+                    E_nu_min_fun(E_nr) * 1e-6, # From eV MeV
+                    E_nu_max * 1e6, #From MeV eV
+                    )
+        print("Val = "+str(val*conv))
+        R.append(val*conv)
+    plt.figure(figsize=(8, 6))
+    plt.plot(ENR,Rflame)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel(r'$E_{NR}$ [eV]', fontsize=16)
+    plt.ylabel(r'$\frac{dR}{dE_R}$ [cm$^2$.keV$^-1$]', fontsize=16)
+    plt.title(r'Differential rate without Migdal VS $E_{NR}$', fontsize=14)
+    plt.grid(True, which="both", ls="--", lw=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    integral = 0
+    rate_flamedisx_dict = {}
+    for shell in shells :
+        E_det = E_e - shell.binding_e
+        R_shell = []
+        for E_det_value in E_det :
+            val, _ = quad(
+                lambda E_nr : rate_flamedisx(E_nr, E_det_value),
+                600,
+                6000,
+            )
+            R_shell.append(val)
+        rate_flamedisx_dict[shell.name] = interp1d(E_det,R_shell, bounds_error=False, fill_value=0)
+    E_arb = np.linspace(0,1e9,10000)
+    total_vals = np.zeros_like(E_arb)
+    for interp in rate_flamedisx_dict.values():
+        final_res += interp(E_arb)
+    
+    plt.figure(figsize=(8, 6))
+    plt.plot(E_arb,total_vals)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel(r'$E_{det}$ [eV]', fontsize=16)
+    plt.ylabel(r'$\frac{dR}{dE_{det}}$ [??]', fontsize=16)
+    plt.title(r'Differential rate with Migdal VS $E_{det}$', fontsize=14)
+    plt.grid(True, which="both", ls="--", lw=0.5)
+    plt.tight_layout()
+    plt.show()
+
+
+
     rate = {}
     print("Lenght E_e : "+str(len(E_e)))
 
+    def drate(E_det):
+        val, _ = dblquad(
+            lambda E_nu, E_nr: integrand_diff(E_nu, E_nr, E_det),                 
+            E_nu_min * nu.MeV / nu.eV,
+            E_nu_max * nu.MeV / nu.eV,       # E_nu (eV)
+            
+            lambda E_nu: 0,                                             # E_nr min (eV)
+            lambda E_nu: E_rmax(E_nu * nu.MeV / nu.eV),
+        )
+
     for shell in shells :
-        E = []
         res_shell = []
+        E_det = []
 
         for E_er in E_e :
+            E_det_values = E_er - shell.binding_e #- include_approx_nr * E_nr * q_nr
 
-            def integrand_wrapped(E_nu, E_nr):
-                E_det_value = E_er - shell.binding_e / nu.eV- include_approx_nr * E_nr *q_nr
+            res_shell.append(drate(E_det_values))
+            E_det.append(E_det_values)
 
-                print('E_er = '+str(E_er))
-                print('shell.binding_e = '+str(shell.binding_e / nu.eV))
-                print('Enr qnr = '+str(E_nr*q_nr))
-                print('Edet = '+str(E_det_value))
-                print('\n')
-
-                if E_det_value <= 0:
-                    #print('CPT')
-                    return 0.0
-                val, p = integrand_diff(E_nu * nu.MeV / nu.eV, E_nr * nu.MeV / nu.eV, E_det_value)
-                E.append(E_det_value)
-                print('PIPOU'+str(E))
-                return val
-
-            res_shell_value, err = dblquad(
-                integrand_wrapped,
-                E_nu_min * nu.MeV / nu.eV, E_nu_max * nu.MeV / nu.eV,       # E_nu (eV)
-                lambda E_nu: 0,                                             # E_nr min (eV)
-                lambda E_nu: E_rmax(E_nu * nu.MeV / nu.eV),                 # E_nr max (eV)
-                **kwargs
-            )
-
-            res_shell.append(res_shell_value)
+        rate[shell.name] = interp1d(E_det, res_shell, bounds_error=False, fill_value=0)
         print("Length Edet : "+str(len(E)))
-        rate[shell.name] = interp1d(E, res_shell, bounds_error=False, fill_value=0)
     
     E_arb = np.linspace(0, 3.5e4 + E_e[len(E_e)-1]) # We define an arbitrary range of energy 
     for interp in rate.values():
