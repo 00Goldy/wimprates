@@ -495,7 +495,6 @@ def rate_migdal_cevns(
         dark_matter=dark_matter,
     )
 
-
     def p_diff_func(E_nr, E_det, shell):
         """ Differential probability for a given shell and nucleus momentum
         :param E_nr: NR energy in eV
@@ -580,7 +579,7 @@ def rate_migdal_cevns(
         :result integrand_diff: integrand to be integrated
         """
         #return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
-        return flux_nu(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV)) * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)), p_diff_func(E_nr, E_det, shell)
+        return flux_nu(E_nu/(nu.MeV/nu.eV)) * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)) * p_diff_func(E_nr, E_det, shell), p_diff_func(E_nr, E_det, shell) 
     """
     df = pd.DataFrame({
         "energy_keV": ENR,
@@ -589,19 +588,43 @@ def rate_migdal_cevns(
 
     df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
     """
+    rate = {}
+
     for shell in shells :
-        result_shell = dblquad(
-            integrand_diff,
-            E_nu_min*nu.eV/nu.MeV, #From MeV to eV
-            E_nu_max*nu.eV/nu.MeV, #From MeV to eV
-            lambda E_nr
-            
+        E = []
+        res_shell = []
+
+        for E_er in E_e :
+
+            def integrand_wrapped(E_nu, E_nr):
+                E_det_value = E_er - shell.binding_e /nu.eV - include_approx_nr * E_nr * nu.MeV / nu.eV *q_nr
+                if E_det_value <= 0:
+                    return 0.0
+                val, p = integrand_diff(E_nu * nu.MeV / nu.eV, E_nr * nu.MeV / nu.eV, E_det_value)
+                E.append(E_det_value)
+                return val
+
+            res_shell_value, err = dblquad(
+                integrand_wrapped,
+                E_nu_min * nu.MeV / nu.eV, E_nu_max * nu.MeV / nu.eV,       # E_nu (eV)
+                lambda E_nu: 0,                                             # E_nr min (eV)
+                lambda E_nu: E_rmax(E_nu * nu.MeV / nu.eV),                 # E_nr max (eV)
+                **kwargs
+            )
+
+            res_shell.append(res_shell_value)
+        rate[shell.name] = interp1d(E, res_shell, bounds_error=False, fill_value=0)
+    
+    E_arb = np.linspace(0, 3.5e4 + E_e[len(E_e)-1]) # We define an arbitrary range of energy 
+    for interp in rate.values():
+        total_vals += interp(E_arb)
+    # Créer l'interpolateur final
+    rate_total = interp1d(E_arb, total_vals, bounds_error=False, fill_value=0)
+
+    return rate_total
 
 
-        )
 
-        Result.append(result_shell)
-    return  Result  # in 
 
 #######################################################################################################################################
 
