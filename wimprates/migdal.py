@@ -447,7 +447,7 @@ def rate_migdal_cevns(
     consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*","5*"],
     E_nu_min: float = 0.6,  # MeV 
     E_nu_max: float = 20, # MeV 
-    include_approx_nr: bool = True,
+    include_approx_nr: bool = False,
     **kwargs
 )-> np.ndarray:
     """Differential rate per unit detector mass and deposited ER energy of
@@ -462,7 +462,9 @@ def rate_migdal_cevns(
     (e.g. error tolerance).
     """
     m_N = wr.mn(material) # We get the mass of a Xe nucleus (in amu)
-    m_N *= 931.5e6*nu.eV/nu.amu # We convert it to eV/c^2 so eV in natural units
+    m_N *= 931.5e6/nu.amu # We convert it to eV/c^2 so eV in natural units
+
+    
     Result = []
     conv = 3.154e7 * nu.NA / (m_N / nu.amu * 1e-6) # Conversion from kg^-1 . s^-1 -> tons^-1 . yr^-1
 
@@ -484,7 +486,10 @@ def rate_migdal_cevns(
         :param E_nu: Neutrino energy in eV
         :result E_rmax: NR recoil energy in eV
         """
-        return 2 * (E_nu * nu.eV)**2 / (m_N + 2*E_nu * nu.eV) * 1/nu.eV
+
+        print('E_rmax' + str(2 * (E_nu * nu.eV)**2 / (m_N * nu.eV + 2*E_nu * nu.eV) * 1/nu.eV))
+
+        return 2 * (E_nu * nu.eV)**2 / (m_N * nu.eV + 2*E_nu * nu.eV) * 1/nu.eV
     
     # We define all the shells for our material and the ionization probability associated
     shells = get_migdal_transitions_probability_iterators(
@@ -503,7 +508,7 @@ def rate_migdal_cevns(
 
         :result p_diff_func: Single ionization differential probability in eV^-1
         """
-        return shell(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.eV /m_N) ** 0.5 / (nu.eV / nu.c0**2))** 2
+        return shell(E_det*nu.eV)*nu.eV /(2*np.pi) * (nu.me  * (2 * E_nr * nu.eV /(m_N*nu.eV)) ** 0.5 / (nu.eV / nu.c0**2))** 2
 
 
     ### First test: Plotting differential probability for Xenon, summed by principal quantum number n
@@ -589,6 +594,7 @@ def rate_migdal_cevns(
     df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
     """
     rate = {}
+    print("Lenght E_e : "+str(len(E_e)))
 
     for shell in shells :
         E = []
@@ -597,11 +603,20 @@ def rate_migdal_cevns(
         for E_er in E_e :
 
             def integrand_wrapped(E_nu, E_nr):
-                E_det_value = E_er - shell.binding_e /nu.eV - include_approx_nr * E_nr * nu.MeV / nu.eV *q_nr
+                E_det_value = E_er - shell.binding_e / nu.eV- include_approx_nr * E_nr *q_nr
+
+                print('E_er = '+str(E_er))
+                print('shell.binding_e = '+str(shell.binding_e / nu.eV))
+                print('Enr qnr = '+str(E_nr*q_nr))
+                print('Edet = '+str(E_det_value))
+                print('\n')
+
                 if E_det_value <= 0:
+                    #print('CPT')
                     return 0.0
                 val, p = integrand_diff(E_nu * nu.MeV / nu.eV, E_nr * nu.MeV / nu.eV, E_det_value)
                 E.append(E_det_value)
+                print('PIPOU'+str(E))
                 return val
 
             res_shell_value, err = dblquad(
@@ -613,11 +628,13 @@ def rate_migdal_cevns(
             )
 
             res_shell.append(res_shell_value)
+        print("Length Edet : "+str(len(E)))
         rate[shell.name] = interp1d(E, res_shell, bounds_error=False, fill_value=0)
     
     E_arb = np.linspace(0, 3.5e4 + E_e[len(E_e)-1]) # We define an arbitrary range of energy 
     for interp in rate.values():
         total_vals += interp(E_arb)
+    ################################################### TO DO : CORRECT
     # Créer l'interpolateur final
     rate_total = interp1d(E_arb, total_vals, bounds_error=False, fill_value=0)
 
