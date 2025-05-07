@@ -439,14 +439,15 @@ def rate_migdal_cevns(
     E_e: np.ndarray,
     flux_nu: Callable[[float], float],
     dsigma: Callable[[float, float], float],
+    rate_from_flamedisx: Callable[[float],float],
     q_nr: float = 0.15,
     material: str ='Xe',
     dark_matter: bool = True,
     dipole: bool = False,
     migdal_model: str = 'Ibe',
     consider_shells: Optional[tuple[str]] = ["1*","2*","3*","4*","5*"],
-    E_nu_min: float = 0.6,  # MeV 
-    E_nu_max: float = 20, # MeV 
+    E_nu_min: float = 0.6*nu.MeV/nu.eV,  # eV 
+    E_nu_max: float = 20*nu.MeV/nu.eV, # eV 
     include_approx_nr: bool = False,
     **kwargs
 )-> np.ndarray:
@@ -522,8 +523,8 @@ def rate_migdal_cevns(
         return 0.5 * (E_r + np.sqrt(E_r**2 + 2 * m_N * E_r))  # E_r et M en eV
 
 
-    ### First test: Plotting differential probability for Xenon, summed by principal quantum number n
-    
+    ### Beginning First test: Plotting differential probability for Xenon, summed by principal quantum number n
+    """
     # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
     E_nr_fixed = 1e-6 * m_N * nu.eV / (2 * nu.eV) # eV
 
@@ -559,11 +560,12 @@ def rate_migdal_cevns(
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
-    
+    """
+    ### End - First test
     
 
-    ### Second test: Computing total probabilities over E_e
-    
+    ### Beginning Second test: Computing total probabilities over E_e
+    """
     # Fixed nuclear recoil energy for a nucleus velocity of 10^-3 in units of c
     E_nr_fixed = 1e-6 * m_N * nu.eV / (2 * nu.eV)
 
@@ -574,18 +576,23 @@ def rate_migdal_cevns(
         Pshell = trapezoid(p_diff_shell, E_e_data)
 
         print(str(shell.name) + " : " + str(Pshell))
+    """
+    ### End - Second test
     
 
 
     # We define the original differential rate to compare
-    def rate_no_migdal(E_nu, E_nr):
+    def rate_no_migdal(E_nr, E_nu):
         """ Differential Rate for a given neutrino Energy and NR energy
         :param E_nu: Neutrino energy in eV
         :param E_nr: NR energy in eV
         
         :result rate_no_migdal: Differential probability without computing the migdal probability
         """
-        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/(nu.MeV/nu.eV))
+        if E_nu < E_nu_min_fun(E_nr):
+            return 0
+        else :
+            return flux_nu(E_nu*nu.eV/nu.MeV)/(nu.MeV/nu.eV) * dsigma(E_nu*nu.eV/nu.MeV, E_nr*nu.eV/nu.MeV)/(nu.MeV/nu.eV)
     
     # We define the differential rate from flamedisx
     def rate_no_migdal_flamedisx(E_nr):
@@ -594,7 +601,7 @@ def rate_migdal_cevns(
         
         :result rate_no_migdal_flamedisx: Differential probability without computing the migdal probability
         """
-        return flux_nu(E_nr/(nu.keV/nu.eV)) * 246.345
+        return rate_from_flamedisx(E_nr/(nu.keV/nu.eV))/(nu.keV/nu.eV) * 246.345
     
     def rate_flamedisx(E_det) :
         """ Differential Rate from flamedisx with migdal effect
@@ -604,33 +611,26 @@ def rate_migdal_cevns(
         """
         
         result, _ = quad(lambda E_nr: rate_no_migdal_flamedisx(E_nr)*p_diff_func(E_nr, E_det, shell),
-                         0.6*1e3,
-                         6*1e3,
+                         600,
+                         6000,
         )
-        print('int rate = ' + str(p_diff_func(E_nr, E_det, shell)))
-        print('diff rate = '+str(rate_no_migdal_flamedisx(E_nr)))
         return result
 
-    def integrand_diff(E_nu, E_nr, E_det):
+    def integrand_diff(E_nr, E_nu, E_det):
         """ Computing dR_mig / (dE_nu . dE_nr . dE_det) to later be integrated over E_nu and E_nr
         :param E_nu: Neutrino energy in eV
         :param E_nr: NR energy in eV
         
         :result integrand_diff: integrand to be integrated
         """
-        #return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV) * dsigma(E_nu/(nu.MeV/nu.eV), E_nr/((nu.MeV/nu.eV))) * P_Mig
-        return flux_nu(E_nu/(nu.MeV/nu.eV))/(nu.MeV/nu.eV)  * dsigma(E_nu/(nu.MeV/nu.eV),E_nr/(nu.MeV/nu.eV)) * p_diff_func(E_nr, E_det, shell), p_diff_func(E_nr, E_det, shell) 
-    """
-    df = pd.DataFrame({
-        "energy_keV": ENR,
-        "spectrum_value_norm": Result
-        })
-
-    df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
-    """
+        if E_nu < E_nu_min_fun(E_nr):
+            return 0
+        else :
+            return flux_nu(E_nu*nu.eV/nu.MeV)/(nu.MeV/nu.eV)  * dsigma(E_nu*nu.eV/nu.MeV,E_nr*nu.eV/nu.MeV)/(nu.MeV/nu.eV) * p_diff_func(E_nr, E_det, shell)
+    
 
     ### Third test : Checking the diffrential Rate as a function of NR energy
-    
+    """
     # For NR energy :
     ENR = np.logspace(np.log10(600),np.log10(6000)) #in eV
     R = []
@@ -659,6 +659,7 @@ def rate_migdal_cevns(
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
+    """
     
 
     interp_list = []  # pour stocker les interpolateurs individuels
@@ -681,7 +682,7 @@ def rate_migdal_cevns(
     print('Normalization : '+str(trapezoid(Rate_unnorm, E_arb)))
     
     plt.figure(figsize=(8, 6))
-    plt.plot(E_arb, Rate_unnorm)
+    plt.plot(E_arb, Rate_unnorm, label='Rate Flamedisx')
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel(r'$E_{det}$ [eV]', fontsize=16)
@@ -690,41 +691,120 @@ def rate_migdal_cevns(
     plt.grid(True, which="both", ls="--", lw=0.5)
     plt.tight_layout()
     plt.show()
+    
+    ### End - Third test
 
     rate = {}
     print("Lenght E_e : "+str(len(E_e)))
 
     def drate(E_det):
+
+        def integrand(E_nr, E_nu):
+            val = integrand_diff(E_nr, E_nu, E_det)
+            print(f"E_nu={E_nu}, E_nr={E_nr}, E_det={E_det}, integrand={val}")
+            print('P : '+str(p_diff_func(E_nr,E_det,shell)))
+            print('flux : '+str(flux_nu(E_nu*nu.eV/nu.MeV)))
+            print('CS : '+str(dsigma(E_nu,E_nr)))
+            print("\n")
+            return val
+
         val, _ = dblquad(
-            lambda E_nu, E_nr: integrand_diff(E_nu, E_nr, E_det),                 
-            E_nu_min * nu.MeV / nu.eV,
-            E_nu_max * nu.MeV / nu.eV,       # E_nu (eV)
-            
-            lambda E_nu: 0,                  # E_nr min (eV)
-            lambda E_nu: E_rmax(E_nu * nu.MeV / nu.eV),
+            integrand,                 
+            E_nu_min ,
+            E_nu_max ,                         # E_nu (eV)
+            lambda E_nu: 600,                  # E_nr min (eV)
+            lambda E_nu : E_rmax(E_nu),
         )
 
-    for shell in shells :
-        res_shell = []
-        E_det = []
+        return val
 
-        for E_er in E_e :
-            E_det_values = E_er - shell.binding_e #- include_approx_nr * E_nr * q_nr
+    interp_list = []  # pour stocker les interpolateurs individuels
+    E_arb = np.logspace(-1+np.log10(5), 5, 10000000)  # grille arbitraire commune
 
-            res_shell.append(drate(E_det_values))
-            E_det.append(E_det_values)
+    for shell in shells:
+        E_det = E_e - shell.binding_e
+        R_shell = [drate(E) for E in E_det]
 
-        rate[shell.name] = interp1d(E_det, res_shell, bounds_error=False, fill_value=0)
-        print("Length Edet : "+str(len(E)))
+        interp_shell = interp1d(E_det, R_shell, bounds_error=False, fill_value=0)
+        interp_list.append(interp_shell)
+
+    # Sommation des interpolateurs sur la grille E_arb
+    total_vals = np.sum([interp(E_arb) for interp in interp_list], axis=0)
+
+    # Créer un nouvel interpolateur pour la somme totale si besoin :
+    interp_tot = interp1d(E_arb, total_vals, bounds_error=False, fill_value=0)
+    Result = interp_tot(E_arb)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(E_arb, Result*conv, label='Mine')
+    plt.plot(E_arb, Rate_unnorm, label='Flamedisx')
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel(r'$E_{det}$ [eV]', fontsize=16)
+    plt.ylabel(r'$\frac{dR}{dE_{det}}$ [tn.yr.keV]$^-1$', fontsize=16)
+    plt.title(r'Differential rate with Migdal VS $E_{det}$', fontsize=14)
+    plt.grid(True, which="both", ls="--", lw=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    df = pd.DataFrame({
+        "energy_keV": E_arb*1e-3,
+        "spectrum_value_norm": Rate_unnorm/np.sum(Rate_unnorm)
+        })
+
+    df.to_pickle("New_CEvNS_Migdal_solar_spectrum.pkl")
+
+    val_nomig, _ = dblquad(
+        rate_no_migdal,
+        E_nu_min ,
+        E_nu_max ,                         # E_nu (eV)
+        lambda E_nu: 600,                  # E_nr min (eV)
+        lambda E_nu : E_rmax(E_nu),
+    )
+    print('Init, integral : '+str(val_nomig*conv))
+    print('Integral Migdal : ' + str(trapezoid(Result*conv,E_arb)))
+
+    R = []
+    ENR = np.logspace(np.log10(600), np.log10(80000), 100000)
+    for E_nr in ENR :
+        rate_nomig, _ = quad(
+            lambda E_nu : rate_no_migdal(E_nr,E_nu),
+            E_nu_min ,
+            E_nu_max,
+        )
+        print('good')
+        R.append(rate_nomig*conv)
+    Norm = np.sum(R)
+    print(Norm)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(ENR, R)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel(r'$E_{NR}$ [eV]', fontsize=16)
+    plt.ylabel(r'$\frac{dR}{dE_{NR}}$ [tn.yr.keV]$^-1$', fontsize=16)
+    plt.title(r'Differential rate without Migdal VS $E_{NR}$', fontsize=14)
+    plt.grid(True, which="both", ls="--", lw=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    df = pd.DataFrame({
+        "energy_keV": ENR*1e-3,
+        "spectrum_value_norm": R/np.sum(R)
+        })
+
+    df.to_pickle("New_CEvNS_solar_spectrum.pkl")
+
+    df = pd.DataFrame({
+        "energy_keV": E_arb*1e-3,
+        "spectrum_value_norm": Result/Norm
+        })
+
+    df.to_pickle("Migdal_CEvNS_solar_spectrum.pkl")
     
-    E_arb = np.linspace(0, 3.5e4 + E_e[len(E_e)-1]) # We define an arbitrary range of energy 
-    for interp in rate.values():
-        total_vals += interp(E_arb)
-    ################################################### TO DO : CORRECT
-    # Créer l'interpolateur final
-    rate_total = interp1d(E_arb, total_vals, bounds_error=False, fill_value=0)
 
-    return rate_total
+    return Result
 
 
 
