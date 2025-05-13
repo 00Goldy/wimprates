@@ -114,7 +114,7 @@ def _create_cox_probability_function(
 
 @export
 def get_migdal_transitions_probability_iterators(
-    material: str = "Xe",
+    material: str = 'Xe',
     model: str = "Ibe",
     considered_shells: Optional[Union[tuple[str], str]] = None,
     dark_matter: bool = True,
